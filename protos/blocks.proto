@@ -1,0 +1,13 @@
+message Message {
+	message Wantlist {
+		repeated Entry entries = 1; // a list of wantlist entries
+
+		message Entry {
+			optional bytes block = 1; // the block key
+			optional bool cancel = 2;  // whether this revokes an entry
+		}
+	}
+
+	optional Wantlist wantlist = 1;
+	repeated bytes blocks = 2;
+}

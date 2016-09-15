@@ -18,6 +18,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
@@ -44,6 +46,20 @@ import (
 	"github.com/ethereum/go-ethereum/release"
 	"github.com/ethereum/go-ethereum/rlp"
 	"gopkg.in/urfave/cli.v1"
+
+	host "gx/ipfs/QmUuwQUJmtvC6ReYcu7xaYKEUM3pD46H18dFn3LBhVt2Di/go-libp2p/p2p/host"
+	bhost "gx/ipfs/QmUuwQUJmtvC6ReYcu7xaYKEUM3pD46H18dFn3LBhVt2Di/go-libp2p/p2p/host/basic"
+	net "gx/ipfs/QmUuwQUJmtvC6ReYcu7xaYKEUM3pD46H18dFn3LBhVt2Di/go-libp2p/p2p/net"
+	swarm "gx/ipfs/QmUuwQUJmtvC6ReYcu7xaYKEUM3pD46H18dFn3LBhVt2Di/go-libp2p/p2p/net/swarm"
+	testutil "gx/ipfs/QmUuwQUJmtvC6ReYcu7xaYKEUM3pD46H18dFn3LBhVt2Di/go-libp2p/testutil"
+	peer "gx/ipfs/QmWXjJo15p4pzT7cayEwZi2sWgJqLnGDof6ZGMh9xBgU1p/go-libp2p-peer"
+
+	pstore "gx/ipfs/QmdMfSLMDBDYhtc4oF3NYGCZr5dy4wQb6Ji26N4D4mdxa2/go-libp2p-peerstore"
+
+	blockspb "github.com/ethereum/go-ethereum/protos"
+	ggio "github.com/gogo/protobuf/io"
+	ma "gx/ipfs/QmYzDkkgAEmrcNzFCiYo6L1dTX4EAG1gZkbtdbd9trL4vd/go-multiaddr"
+	context "gx/ipfs/QmZy2y8t9zQH2a1b8q2ZSLKp17ATuJoCNxxyMFG5qFExpt/go-net/context"
 )
 
 const (
@@ -263,12 +279,130 @@ func makeDefaultExtra() []byte {
 	return extra
 }
 
+func makeHost(listen string) (host.Host, error) {
+	addr, err := ma.NewMultiaddr(listen)
+	if err != nil {
+		return nil, err
+	}
+
+	ps := pstore.NewPeerstore()
+
+	priv, pub, err := testutil.SeededTestKeyPair(42)
+	if err != nil {
+		return nil, err
+	}
+
+	pid, err := peer.IDFromPublicKey(pub)
+	if err != nil {
+		return nil, err
+	}
+
+	ps.AddPubKey(pid, pub)
+	ps.AddPrivKey(pid, priv)
+
+	ctx := context.Background()
+
+	// create a new swarm to be used by the service host
+	netw, err := swarm.NewNetwork(ctx, []ma.Multiaddr{addr}, pid, ps, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Printf("I am %s/ipfs/%s\n", addr, pid.Pretty())
+	return bhost.New(netw), nil
+}
+
 // geth is the main entry point into the system if no special subcommand is ran.
 // It creates a default node based on the command line arguments and runs it in
 // blocking mode, waiting for it to be shut down.
 func geth(ctx *cli.Context) error {
 	node := utils.MakeSystemNode(clientIdentifier, verString, relConfig, makeDefaultExtra(), ctx)
 	startNode(ctx, node)
+
+	// start libp2p node
+	// create a 'Host' with a random peer to listen on the given address
+
+	listenaddr := fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", 4002)
+
+	ha, err := makeHost(listenaddr)
+	if err != nil {
+		panic(err)
+	}
+
+	var ethereum *eth.Ethereum
+	err = node.Service(&ethereum)
+	if err != nil {
+		panic(err)
+	}
+
+	// Set a stream handler on host A
+	ha.SetStreamHandler("/eth/blocks", func(s net.Stream) {
+		defer s.Close()
+		r := ggio.NewDelimitedReader(s, 8<<20)
+		w := ggio.NewDelimitedWriter(s)
+		for {
+			msg := new(blockspb.Message)
+			err := r.ReadMsg(msg)
+			if err != nil {
+				glog.Error("protobuf error: ", err)
+				return
+			}
+
+			if len(msg.GetBlocks()) > 0 {
+				panic("we dont handle blocks yet")
+			}
+
+			resp := new(blockspb.Message)
+			for _, want := range msg.GetWantlist().GetEntries() {
+				if want.GetCancel() {
+					continue
+				}
+
+				h := common.BytesToHash(want.GetBlock())
+				blk := ethereum.BlockChain().GetBlock(h)
+
+				buf := new(bytes.Buffer)
+				err := blk.EncodeRLP(buf)
+				if err != nil {
+					glog.Error("error encoding block: ", err)
+					continue
+				}
+
+				resp.Blocks = append(resp.Blocks, buf.Bytes())
+			}
+
+			err = w.WriteMsg(resp)
+			if err != nil {
+				glog.Error("error writing back message: ", err)
+				return
+			}
+		}
+
+	})
+
+	ha.SetStreamHandler("/eth/tx", func(s net.Stream) {
+		defer s.Close()
+		txns := ethereum.TxPool().GetTransactions()
+		fmt.Printf("Have %d transactions\n", txns.Len())
+		varintbuf := make([]byte, 10)
+		for i := 0; i < txns.Len(); i++ {
+			data := txns.GetRlp(i)
+			fmt.Printf("rlp length: %d\n", len(data))
+			n := binary.PutUvarint(varintbuf, uint64(len(data)))
+			_, err := s.Write(varintbuf[:n])
+			if err != nil {
+				glog.Error("error writing transactions to libp2p node: ", err)
+				return
+			}
+
+			_, err = s.Write(data)
+			if err != nil {
+				glog.Error("error writing transactions to libp2p node: ", err)
+				return
+			}
+		}
+	})
+
 	node.Wait()
 
 	return nil
@@ -321,6 +455,7 @@ func startNode(ctx *cli.Context, stack *node.Node) {
 			unlockAccount(ctx, accman, trimmed, i, passwords)
 		}
 	}
+
 	// Start auxiliary services if enabled
 	if ctx.GlobalBool(utils.MiningEnabledFlag.Name) {
 		if err := ethereum.StartMining(ctx.GlobalInt(utils.MinerThreadsFlag.Name), ctx.GlobalString(utils.MiningGPUFlag.Name)); err != nil {
