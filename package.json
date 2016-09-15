@@ -1,0 +1,22 @@
+{
+  "author": "whyrusleeping",
+  "bugs": {
+    "url": "https://github.com/whyrusleeping/go-ethereum"
+  },
+  "gx": {
+    "dvcsimport": "github.com/ethereum/go-ethereum"
+  },
+  "gxDependencies": [
+    {
+      "author": "whyrusleeping",
+      "hash": "QmUuwQUJmtvC6ReYcu7xaYKEUM3pD46H18dFn3LBhVt2Di",
+      "name": "go-libp2p",
+      "version": "3.5.2"
+    }
+  ],
+  "gxVersion": "0.9.0",
+  "language": "go",
+  "license": "",
+  "name": "go-ethereum",
+  "version": "0.0.0"
+}

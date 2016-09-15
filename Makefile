@@ -122,3 +122,10 @@ geth-ios:
 	build/env.sh go run build/ci.go xgo --go=$(GO) --dest=$(GOBIN) --targets=ios-7.0/framework -v ./cmd/geth
 	@echo "iOS framework cross compilation done:"
 	@ls -ld $(GOBIN)/geth-ios-*
+
+libp2p:
+	go get github.com/whyrusleeping/gx
+	go get github.com/whyrusleeping/gx-go
+	gx install
+	go get -u ./cmd/geth
+
