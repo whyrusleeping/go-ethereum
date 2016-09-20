@@ -336,6 +336,29 @@ func geth(ctx *cli.Context) error {
 	}
 
 	// Set a stream handler on host A
+	ha.SetStreamHandler("/eth/allblocks", func(s net.Stream) {
+		defer s.Close()
+		for i := uint64(0); true; i++ {
+			blk := ethereum.BlockChain().GetBlockByNumber(i)
+			if blk == nil {
+				glog.Error("nil block", i)
+				return
+			}
+
+			buf := new(bytes.Buffer)
+			err := blk.EncodeRLP(buf)
+			if err != nil {
+				glog.Error(err)
+				return
+			}
+
+			lbuf := make([]byte, 10)
+			n := binary.PutVarint(lbuf, int64(buf.Len()))
+			s.Write(lbuf[:n])
+			buf.WriteTo(s)
+		}
+	})
+
 	ha.SetStreamHandler("/eth/blocks", func(s net.Stream) {
 		defer s.Close()
 		r := ggio.NewDelimitedReader(s, 8<<20)
